@@ -45,27 +45,27 @@ export class EmailService implements OnModuleInit {
   }
 
   async sendRecoveryEmail(to: string, recoveryCode: string): Promise<void> {
-    const subject = 'Recuperación de contraseña';
+    const subject = 'Recupera tu acceso a Beacon';
     const safeCode = this.escapeHtml(recoveryCode.trim().toUpperCase());
     const contentHtml = [
-      '<p style="margin:0 0 12px;color:#24364a;font-size:15px;line-height:1.55;">',
-      'Recibimos una solicitud para recuperar la contraseña de tu cuenta en la Plataforma Beacon.',
+      '<p style="margin:0 0 12px;color:#1E293B;font-size:15px;line-height:1.55;">',
+      'Recibimos una solicitud para restablecer la contraseña de tu cuenta en Beacon.',
       '</p>',
-      '<p style="margin:0 0 12px;color:#24364a;font-size:15px;line-height:1.55;">',
-      'Ingresa el siguiente código en el formulario de restablecimiento:',
+      '<p style="margin:0 0 12px;color:#1E293B;font-size:15px;line-height:1.55;">',
+      'Usa este código en el formulario de recuperación:',
       '</p>',
-      '<div style="margin:18px 0;padding:16px;border:1px dashed #9eb6cd;border-radius:10px;background:#f2f7fc;text-align:center;">',
-      '<span style="display:block;color:#4a5f74;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Código de recuperación</span>',
-      `<span style="display:block;color:#25306b;font-size:31px;font-weight:700;letter-spacing:0.22em;margin-top:6px;">${safeCode}</span>`,
+      '<div style="margin:18px 0;padding:16px;border:1px solid #E2E8F0;border-radius:12px;background:#F8FAFC;text-align:center;">',
+      '<span style="display:block;color:#64748B;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;">Código de recuperación</span>',
+      `<span style="display:block;color:#183A72;font-size:28px;font-weight:700;letter-spacing:0.2em;margin-top:8px;">${safeCode}</span>`,
       '</div>',
-      '<p style="margin:0 0 8px;color:#24364a;font-size:15px;line-height:1.55;">Este código vence en 15 minutos.</p>',
-      '<p style="margin:0;color:#4a5f74;font-size:14px;line-height:1.55;">Si no solicitaste este cambio, ignora este correo.</p>',
+      '<p style="margin:0 0 8px;color:#1E293B;font-size:15px;line-height:1.55;">Este código vence en 15 minutos.</p>',
+      '<p style="margin:0;color:#64748B;font-size:14px;line-height:1.55;">Si no solicitaste este cambio, puedes ignorar este correo con tranquilidad.</p>',
     ].join('');
 
     await this.sendTemplatedEmail({
       to,
       subject,
-      preheader: 'Código de recuperación de cuenta',
+      preheader: 'Tu código para volver a Beacon',
       contentHtml,
       variant: 'recovery',
       withSuccessLog: true,
@@ -77,31 +77,29 @@ export class EmailService implements OnModuleInit {
     recipientName: string,
     roleLabel: string,
   ): Promise<void> {
-    const subject = 'Registro recibido: cuenta pendiente de activación';
+    const subject = 'Bienvenido a Beacon: cuenta pendiente de activación';
     const safeRecipientName = this.escapeHtml(recipientName.trim());
     const safeRoleLabel = this.escapeHtml(roleLabel.trim());
 
     const contentHtml = [
-      `<p style="margin:0 0 12px;color:#24364a;font-size:15px;line-height:1.55;">Hola ${safeRecipientName},</p>`,
-      '<p style="margin:0 0 12px;color:#24364a;font-size:15px;line-height:1.55;">',
-      'Tu cuenta fue creada correctamente y se encuentra pendiente de activación.',
+      `<p style="margin:0 0 12px;color:#1E293B;font-size:15px;line-height:1.55;">Hola ${safeRecipientName},</p>`,
+      '<p style="margin:0 0 12px;color:#1E293B;font-size:15px;line-height:1.55;">',
+      'Tu cuenta en Beacon se creó correctamente. Antes de entrar, un administrador debe activar tu acceso.',
       '</p>',
-      '<div style="margin:18px 0;padding:14px 16px;border:1px solid #e6d9bd;border-radius:10px;background:#fff9ec;">',
-      '<p style="margin:0 0 4px;color:#8d6400;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;">Estado de cuenta</p>',
-      '<p style="margin:0;color:#4b4f56;font-size:15px;line-height:1.55;"><strong>Pendiente de activación</strong></p>',
+      '<div style="margin:18px 0;padding:14px 16px;border:1px solid #E2E8F0;border-radius:12px;background:#FFFBEB;">',
+      '<p style="margin:0 0 4px;color:#B45309;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">Estado</p>',
+      '<p style="margin:0;color:#1E293B;font-size:15px;line-height:1.55;"><strong>Pendiente de activación</strong></p>',
       '</div>',
-      `<p style="margin:0 0 8px;color:#24364a;font-size:15px;line-height:1.55;">Rol asignado: <strong>${safeRoleLabel}</strong></p>`,
-      '<p style="margin:0;color:#4a5f74;font-size:14px;line-height:1.55;">',
-      'Un administrador debe habilitar tu acceso antes de que puedas iniciar sesión. ',
-      'Te notificaremos por correo cuando tu cuenta quede activa.',
+      `<p style="margin:0 0 8px;color:#1E293B;font-size:15px;line-height:1.55;">Rol asignado: <strong>${safeRoleLabel}</strong></p>`,
+      '<p style="margin:0;color:#64748B;font-size:14px;line-height:1.55;">',
+      'Te avisaremos por correo cuando tu cuenta quede activa y puedas empezar a usar Beacon.',
       '</p>',
     ].join('');
 
     await this.sendTemplatedEmail({
       to,
       subject,
-      preheader:
-        'Tu cuenta está en espera de habilitación por un administrador.',
+      preheader: 'Tu cuenta está lista; falta la activación de un administrador.',
       contentHtml,
       variant: 'pending-activation',
       withSuccessLog: false,
@@ -113,29 +111,29 @@ export class EmailService implements OnModuleInit {
     recipientName: string,
     roleLabel: string,
   ): Promise<void> {
-    const subject = 'Cuenta activada: ya puedes ingresar';
+    const subject = 'Tu cuenta Beacon ya está activa';
     const safeRecipientName = this.escapeHtml(recipientName.trim());
     const safeRoleLabel = this.escapeHtml(roleLabel.trim());
 
     const contentHtml = [
-      `<p style="margin:0 0 12px;color:#24364a;font-size:15px;line-height:1.55;">Hola ${safeRecipientName},</p>`,
-      '<p style="margin:0 0 12px;color:#24364a;font-size:15px;line-height:1.55;">',
-      'Tu cuenta fue activada por un administrador y ya puedes iniciar sesión en la plataforma.',
+      `<p style="margin:0 0 12px;color:#1E293B;font-size:15px;line-height:1.55;">Hola ${safeRecipientName},</p>`,
+      '<p style="margin:0 0 12px;color:#1E293B;font-size:15px;line-height:1.55;">',
+      'Tu cuenta fue activada. Ya puedes iniciar sesión y mantener el rumbo de tus finanzas, hábitos y rutina diaria.',
       '</p>',
-      '<div style="margin:18px 0;padding:14px 16px;border:1px solid #b8deca;border-radius:10px;background:#effaf4;">',
-      '<p style="margin:0 0 4px;color:#176744;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;">Estado de cuenta</p>',
-      '<p style="margin:0;color:#1f5137;font-size:15px;line-height:1.55;"><strong>Activa y habilitada</strong></p>',
+      '<div style="margin:18px 0;padding:14px 16px;border:1px solid #BBF7D0;border-radius:12px;background:#F0FDF4;">',
+      '<p style="margin:0 0 4px;color:#15803D;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">Estado</p>',
+      '<p style="margin:0;color:#14532D;font-size:15px;line-height:1.55;"><strong>Activa</strong></p>',
       '</div>',
-      `<p style="margin:0 0 8px;color:#24364a;font-size:15px;line-height:1.55;">Rol asignado: <strong>${safeRoleLabel}</strong></p>`,
-      '<p style="margin:0;color:#4a5f74;font-size:14px;line-height:1.55;">',
-      'Si detectas una actividad no reconocida en tu cuenta, contacta al equipo administrador de Beacon.',
+      `<p style="margin:0 0 8px;color:#1E293B;font-size:15px;line-height:1.55;">Rol asignado: <strong>${safeRoleLabel}</strong></p>`,
+      '<p style="margin:0;color:#64748B;font-size:14px;line-height:1.55;">',
+      'Si no reconoces esta activación, contacta al administrador de tu espacio Beacon.',
       '</p>',
     ].join('');
 
     await this.sendTemplatedEmail({
       to,
       subject,
-      preheader: 'Tu cuenta fue habilitada. Ya puedes acceder al sistema.',
+      preheader: 'Ya puedes entrar a Beacon.',
       contentHtml,
       variant: 'activated',
       withSuccessLog: false,
@@ -171,7 +169,7 @@ export class EmailService implements OnModuleInit {
     variant: AlertTemplateVariant;
     withSuccessLog: boolean;
   }): Promise<void> {
-    const html = this.buildGovernmentTemplate(
+    const html = this.buildBeaconTemplate(
       subject,
       contentHtml,
       preheader,
@@ -210,7 +208,7 @@ export class EmailService implements OnModuleInit {
     }
   }
 
-  private buildGovernmentTemplate(
+  private buildBeaconTemplate(
     subject: string,
     contentHtml: string,
     preheader: string,
@@ -222,7 +220,8 @@ export class EmailService implements OnModuleInit {
     const themeByVariant: Record<
       AlertTemplateVariant,
       {
-        headerGradient: string;
+        headerBackground: string;
+        eyebrow: string;
         borderColor: string;
         noteAccentColor: string;
         noteBackground: string;
@@ -230,32 +229,36 @@ export class EmailService implements OnModuleInit {
       }
     > = {
       recovery: {
-        headerGradient: 'linear-gradient(135deg,#25306b 0%,#006bb9 100%)',
-        borderColor: '#d6dce8',
-        noteAccentColor: '#d52b1e',
-        noteBackground: '#f8fbff',
-        footerBackground: '#f4f7fa',
+        headerBackground: '#183A72',
+        eyebrow: 'Seguridad de cuenta',
+        borderColor: '#E2E8F0',
+        noteAccentColor: '#4A90E2',
+        noteBackground: '#F8FAFC',
+        footerBackground: '#F8FAFC',
       },
       'pending-activation': {
-        headerGradient: 'linear-gradient(135deg,#6b5a25 0%,#b68a0f 100%)',
-        borderColor: '#e5dcc7',
-        noteAccentColor: '#8d6400',
-        noteBackground: '#fff9ec',
-        footerBackground: '#fbf8f0',
+        headerBackground: '#183A72',
+        eyebrow: 'Activación pendiente',
+        borderColor: '#E2E8F0',
+        noteAccentColor: '#F59E0B',
+        noteBackground: '#FFFBEB',
+        footerBackground: '#F8FAFC',
       },
       activated: {
-        headerGradient: 'linear-gradient(135deg,#1f6b4e 0%,#2f8f67 100%)',
-        borderColor: '#cfe4d8',
-        noteAccentColor: '#176744',
-        noteBackground: '#effaf4',
-        footerBackground: '#f3faf6',
+        headerBackground: '#183A72',
+        eyebrow: 'Cuenta lista',
+        borderColor: '#E2E8F0',
+        noteAccentColor: '#22C55E',
+        noteBackground: '#F0FDF4',
+        footerBackground: '#F8FAFC',
       },
       generic: {
-        headerGradient: 'linear-gradient(135deg,#25306b 0%,#006bb9 100%)',
-        borderColor: '#d6dce8',
-        noteAccentColor: '#d52b1e',
-        noteBackground: '#f8fbff',
-        footerBackground: '#f4f7fa',
+        headerBackground: '#183A72',
+        eyebrow: 'Beacon',
+        borderColor: '#E2E8F0',
+        noteAccentColor: '#FFC857',
+        noteBackground: '#F8FAFC',
+        footerBackground: '#F8FAFC',
       },
     };
 
@@ -268,16 +271,17 @@ export class EmailService implements OnModuleInit {
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>${safeSubject}</title>
   </head>
-  <body style="margin:0;padding:0;background:#edf0f5;color:#1a1e3a;">
+  <body style="margin:0;padding:0;background:#F8FAFC;color:#1E293B;">
     <span style="display:none;max-height:0;overflow:hidden;opacity:0;">${safePreheader}</span>
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;background:#edf0f5;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;background:#F8FAFC;">
       <tr>
         <td align="center" style="padding:24px 12px;">
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;border-collapse:collapse;border:1px solid ${theme.borderColor};border-radius:12px;overflow:hidden;background:#ffffff;font-family:Segoe UI, Arial, Helvetica, sans-serif;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;border-collapse:collapse;border:1px solid ${theme.borderColor};border-radius:14px;overflow:hidden;background:#FFFFFF;font-family:Manrope, Segoe UI, Arial, Helvetica, sans-serif;">
             <tr>
-              <td style="padding:20px 24px;background:${theme.headerGradient};color:#ffffff;">
-                <p style="margin:0 0 6px;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;opacity:0.92;">Gobierno de Chile · Ministerio de Transportes y Telecomunicaciones</p>
-                <h1 style="margin:0;font-size:24px;line-height:1.2;font-weight:700;">${safeSubject}</h1>
+              <td style="padding:22px 24px;background:${theme.headerBackground};color:#FFFFFF;">
+                <p style="margin:0 0 8px;font-size:12px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:#FFC857;">${theme.eyebrow}</p>
+                <p style="margin:0 0 4px;font-size:13px;opacity:0.88;">Beacon</p>
+                <h1 style="margin:0;font-size:22px;line-height:1.25;font-weight:700;color:#FFFFFF;">${safeSubject}</h1>
               </td>
             </tr>
             <tr>
@@ -285,14 +289,14 @@ export class EmailService implements OnModuleInit {
             </tr>
             <tr>
               <td style="padding:0 24px 20px;">
-                <p style="margin:0;padding:12px 14px;border-left:4px solid ${theme.noteAccentColor};background:${theme.noteBackground};color:#30465a;font-size:13px;line-height:1.5;">
-                  Este es un mensaje automático de la Plataforma Beacon. No respondas directamente a este correo.
+                <p style="margin:0;padding:12px 14px;border-left:4px solid ${theme.noteAccentColor};background:${theme.noteBackground};color:#64748B;font-size:13px;line-height:1.5;">
+                  Este es un mensaje automático de Beacon. No respondas a este correo.
                 </p>
               </td>
             </tr>
             <tr>
-              <td style="padding:14px 24px;border-top:1px solid #dde4ee;background:${theme.footerBackground};color:#4d6174;font-size:12px;line-height:1.45;">
-                Subsecretaría de Transportes · Unidad Operativa de Control de Tránsito
+              <td style="padding:14px 24px;border-top:1px solid #E2E8F0;background:${theme.footerBackground};color:#64748B;font-size:12px;line-height:1.45;">
+                Beacon · Tu faro personal para finanzas, hábitos y rutina diaria
               </td>
             </tr>
           </table>
@@ -310,13 +314,13 @@ export class EmailService implements OnModuleInit {
       .filter((line) => line.length > 0);
 
     if (lines.length === 0) {
-      return '<p style="margin:0;color:#24364a;font-size:15px;line-height:1.55;">Sin contenido.</p>';
+      return '<p style="margin:0;color:#1E293B;font-size:15px;line-height:1.55;">Sin contenido.</p>';
     }
 
     return lines
       .map(
         (line) =>
-          `<p style="margin:0 0 12px;color:#24364a;font-size:15px;line-height:1.55;">${this.escapeHtml(line)}</p>`,
+          `<p style="margin:0 0 12px;color:#1E293B;font-size:15px;line-height:1.55;">${this.escapeHtml(line)}</p>`,
       )
       .join('');
   }
