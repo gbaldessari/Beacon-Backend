@@ -19,7 +19,7 @@ import {
 } from './guard/auth-rate-limit.guard';
 import { JwtAuthGuard } from './guard/jwt-auth.guard';
 import { LoginDto, LoginResponseDto } from './dto/login.dto';
-import { RegisterDto } from './dto/register-user.dto';
+import { PublicRegisterDto, RegisterDto } from './dto/register-user.dto';
 import {
   RecoverPasswordDto,
   RequestPasswordRecoverDto,
@@ -78,7 +78,7 @@ export class AuthController {
   @Post('public-register')
   @UseGuards(AuthRateLimitGuard)
   @AuthRateLimit({ points: 3, windowMs: 60 * 60 * 1000 })
-  async publicRegister(@Body() registerDto: RegisterDto): Promise<void> {
+  async publicRegister(@Body() registerDto: PublicRegisterDto): Promise<void> {
     return await this.authService.publicRegister(registerDto);
   }
 

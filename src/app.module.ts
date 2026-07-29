@@ -6,6 +6,7 @@ import { join } from 'path';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthModule } from './auth/auth.module';
 import { EmailModule } from './email/email.module';
+import { RemindersModule } from './reminders/reminders.module';
 
 /**
  * Módulo raíz de la aplicación backend.
@@ -36,6 +37,7 @@ import { EmailModule } from './email/email.module';
     ScheduleModule.forRoot(),
     AuthModule,
     EmailModule,
+    RemindersModule,
   ],
   controllers: [],
   providers: [],

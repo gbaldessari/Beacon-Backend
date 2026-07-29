@@ -21,7 +21,7 @@ import {
   RequestPasswordRecoverDto,
 } from './dto/password-recover.dto';
 import { RefreshTokenResponseDto } from './dto/refresh-token.dto';
-import { RegisterDto } from './dto/register-user.dto';
+import { PublicRegisterDto, RegisterDto } from './dto/register-user.dto';
 import { UpdateNameDto } from './dto/update-name.dto';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 import { ValidateAccessTokenResponseDto } from './dto/validate-access-token.dto';
@@ -141,16 +141,17 @@ export class AuthService {
 
   /**
    * Registers a new user from the public authentication flow.
+   * Always assigns the system USER role.
    *
    * @param userData Data of the user to be registered
    * @returns void
    */
-  async publicRegister(userData: RegisterDto): Promise<void> {
+  async publicRegister(userData: PublicRegisterDto): Promise<void> {
     const roleDefinition =
-      await this.roleDefinitionService.ensureAssignableRole(userData.role);
+      await this.roleDefinitionService.ensureAssignableRole(Role.USER);
     if (roleDefinition.permission_type !== PermissionType.USER) {
       throw new BadRequestException(
-        'Role is not allowed for public registration',
+        'Default public registration role is not available',
       );
     }
 
