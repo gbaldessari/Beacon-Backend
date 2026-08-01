@@ -5,19 +5,29 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import {
   CreateReminderDto,
   SetReminderCompletionDto,
   UpdateReminderDto,
 } from './dto/reminder.dto';
 import { ReminderCompletion } from './entities/reminder-completion.entity';
+import { ReminderException } from './entities/reminder-exception.entity';
 import { Reminder } from './entities/reminder.entity';
 import {
+  ReminderEditScope,
   ReminderNotifyUnit,
   ReminderRecurrence,
   ReminderTimeMode,
 } from './reminder-recurrence.enum';
+import {
+  dayBeforeKey,
+  eachDateKeyInRange,
+  formatDateKey,
+  getSeriesStartKey,
+  matchesRecurrencePattern,
+  parseDateKey,
+} from './reminder-series.utils';
 
 export type ReminderView = {
   id: string;
@@ -40,8 +50,29 @@ export type ReminderView = {
   nextOccurrenceAt: string | null;
   notifyAt: string | null;
   lastCompletedAt: string | null;
+  seriesId: string | null;
+  seriesStart: string | null;
+  seriesUntil: string | null;
+  originalOccurrenceDate: string | null;
+  isOverride: boolean;
   createdAt: string;
   updatedAt: string;
+};
+
+export type ReminderOccurrenceView = {
+  reminderId: string;
+  seriesId: string | null;
+  date: string;
+  title: string;
+  description: string | null;
+  repeats: boolean;
+  recurrenceType: ReminderRecurrence;
+  timeMode: ReminderTimeMode;
+  startTime: string | null;
+  endTime: string | null;
+  isOverride: boolean;
+  completed: boolean;
+  reminder: ReminderView;
 };
 
 export type UpcomingReminderView = ReminderView & {
@@ -78,6 +109,8 @@ export class RemindersService {
     private readonly remindersRepository: Repository<Reminder>,
     @InjectRepository(ReminderCompletion)
     private readonly completionsRepository: Repository<ReminderCompletion>,
+    @InjectRepository(ReminderException)
+    private readonly exceptionsRepository: Repository<ReminderException>,
   ) {}
 
   async listForUser(
@@ -85,12 +118,161 @@ export class RemindersService {
     timeZone = 'UTC',
   ): Promise<ReminderView[]> {
     const reminders = await this.remindersRepository.find({
-      where: { user_id: userId },
+      where: { user_id: userId, is_override: false },
       order: { created_at: 'DESC' },
     });
 
     return Promise.all(
       reminders.map((reminder) => this.toView(reminder, timeZone)),
+    );
+  }
+
+  async listOccurrences(
+    userId: string,
+    from?: string,
+    to?: string,
+    timeZone = 'UTC',
+  ): Promise<ReminderOccurrenceView[]> {
+    if (
+      !from ||
+      !to ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(from) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(to) ||
+      from > to
+    ) {
+      throw new BadRequestException(
+        'Indica un rango from/to válido (YYYY-MM-DD).',
+      );
+    }
+
+    const safeTimeZone = this.resolveTimeZone(timeZone);
+    const reminders = await this.remindersRepository.find({
+      where: { user_id: userId },
+    });
+    const masters = reminders.filter((item) => !item.is_override);
+    const overrides = reminders.filter((item) => item.is_override);
+    const masterIds = masters.map((item) => item.id);
+
+    const exceptions =
+      masterIds.length === 0
+        ? []
+        : await this.exceptionsRepository.find({
+            where: { reminder_id: In(masterIds), user_id: userId },
+          });
+
+    const exceptionSet = new Set(
+      exceptions.map((item) => `${item.reminder_id}:${item.occurrence_date}`),
+    );
+    const overrideByOriginal = new Map<string, Reminder>();
+    for (const override of overrides) {
+      if (override.series_id && override.original_occurrence_date) {
+        overrideByOriginal.set(
+          `${override.series_id}:${override.original_occurrence_date}`,
+          override,
+        );
+      }
+    }
+
+    const completions = await this.completionsRepository.find({
+      where: { user_id: userId },
+    });
+    const completedSet = new Set(
+      completions
+        .filter((item) => item.occurrence_date)
+        .map((item) => `${item.reminder_id}:${item.occurrence_date}`),
+    );
+
+    const viewsById = new Map<string, ReminderView>();
+    await Promise.all(
+      reminders.map(async (reminder) => {
+        viewsById.set(reminder.id, await this.toView(reminder, safeTimeZone));
+      }),
+    );
+
+    const results: ReminderOccurrenceView[] = [];
+    const dateKeys = eachDateKeyInRange(from, to);
+
+    for (const dateKey of dateKeys) {
+      const date = parseDateKey(dateKey);
+
+      for (const master of masters) {
+        if (master.recurrence_type === ReminderRecurrence.NONE) {
+          if (master.scheduled_date === dateKey) {
+            const view = viewsById.get(master.id)!;
+            results.push({
+              reminderId: master.id,
+              seriesId: null,
+              date: dateKey,
+              title: master.title,
+              description: master.description,
+              repeats: false,
+              recurrenceType: ReminderRecurrence.NONE,
+              timeMode: master.time_mode,
+              startTime: master.start_time,
+              endTime: master.end_time,
+              isOverride: false,
+              completed: completedSet.has(`${master.id}:${dateKey}`),
+              reminder: view,
+            });
+          }
+          continue;
+        }
+
+        if (!matchesRecurrencePattern(master, date)) {
+          continue;
+        }
+        if (exceptionSet.has(`${master.id}:${dateKey}`)) {
+          continue;
+        }
+        if (overrideByOriginal.has(`${master.id}:${dateKey}`)) {
+          continue;
+        }
+
+        const view = viewsById.get(master.id)!;
+        results.push({
+          reminderId: master.id,
+          seriesId: master.id,
+          date: dateKey,
+          title: master.title,
+          description: master.description,
+          repeats: true,
+          recurrenceType: master.recurrence_type,
+          timeMode: master.time_mode,
+          startTime: master.start_time,
+          endTime: master.end_time,
+          isOverride: false,
+          completed: completedSet.has(`${master.id}:${dateKey}`),
+          reminder: view,
+        });
+      }
+
+      for (const override of overrides) {
+        if (override.scheduled_date !== dateKey) {
+          continue;
+        }
+        const view = viewsById.get(override.id)!;
+        results.push({
+          reminderId: override.id,
+          seriesId: override.series_id,
+          date: dateKey,
+          title: override.title,
+          description: override.description,
+          repeats: false,
+          recurrenceType: ReminderRecurrence.NONE,
+          timeMode: override.time_mode,
+          startTime: override.start_time,
+          endTime: override.end_time,
+          isOverride: true,
+          completed: completedSet.has(`${override.id}:${dateKey}`),
+          reminder: view,
+        });
+      }
+    }
+
+    return results.sort((a, b) =>
+      a.date === b.date
+        ? a.title.localeCompare(b.title, 'es')
+        : a.date.localeCompare(b.date),
     );
   }
 
@@ -154,12 +336,28 @@ export class RemindersService {
       order: { completed_at: 'DESC' },
     });
 
-    return completions.map((completion) => ({
-      id: completion.id,
-      reminderId: completion.reminder_id,
-      completedAt: completion.completed_at.toISOString(),
-      occurrenceDate: completion.occurrence_date,
-    }));
+    return completions.map((completion) => this.toCompletionView(completion));
+  }
+
+  async listCompletionsForUser(
+    userId: string,
+    from?: string,
+    to?: string,
+  ): Promise<ReminderCompletionView[]> {
+    const qb = this.completionsRepository
+      .createQueryBuilder('c')
+      .where('c.user_id = :userId', { userId })
+      .orderBy('c.completed_at', 'DESC');
+
+    if (from && /^\d{4}-\d{2}-\d{2}$/.test(from)) {
+      qb.andWhere('c.occurrence_date >= :from', { from });
+    }
+    if (to && /^\d{4}-\d{2}-\d{2}$/.test(to)) {
+      qb.andWhere('c.occurrence_date <= :to', { to });
+    }
+
+    const completions = await qb.getMany();
+    return completions.map((completion) => this.toCompletionView(completion));
   }
 
   async create(userId: string, dto: CreateReminderDto): Promise<ReminderView> {
@@ -181,6 +379,14 @@ export class RemindersService {
       notify_value: schedule.notifyValue,
       notify_unit: schedule.notifyUnit,
       last_completed_at: null,
+      series_id: null,
+      series_start:
+        schedule.recurrenceType === ReminderRecurrence.NONE
+          ? null
+          : formatDateKey(new Date()),
+      series_until: null,
+      original_occurrence_date: null,
+      is_override: false,
     });
 
     const saved = await this.remindersRepository.save(reminder);
@@ -191,9 +397,123 @@ export class RemindersService {
     userId: string,
     reminderId: string,
     dto: UpdateReminderDto,
+    timeZone = 'UTC',
   ): Promise<ReminderView> {
     const reminder = await this.findOwnedOrFail(userId, reminderId);
+    const safeTimeZone = this.resolveTimeZone(timeZone);
 
+    if (reminder.is_override || reminder.recurrence_type === ReminderRecurrence.NONE) {
+      return this.applyDirectUpdate(reminder, dto, safeTimeZone);
+    }
+
+    const scope = dto.scope ?? ReminderEditScope.ALL;
+    const occurrenceDate = dto.occurrenceDate?.trim();
+
+    if (scope !== ReminderEditScope.ALL) {
+      if (!occurrenceDate || !/^\d{4}-\d{2}-\d{2}$/.test(occurrenceDate)) {
+        throw new BadRequestException(
+          'occurrenceDate es obligatorio para este alcance.',
+        );
+      }
+    }
+
+    if (scope === ReminderEditScope.THIS) {
+      return this.updateThisOccurrence(
+        reminder,
+        userId,
+        occurrenceDate as string,
+        dto,
+        safeTimeZone,
+      );
+    }
+
+    if (scope === ReminderEditScope.THIS_AND_FOLLOWING) {
+      return this.updateThisAndFollowing(
+        reminder,
+        userId,
+        occurrenceDate as string,
+        dto,
+        safeTimeZone,
+      );
+    }
+
+    return this.applyDirectUpdate(reminder, dto, safeTimeZone);
+  }
+
+  async remove(
+    userId: string,
+    reminderId: string,
+    scope?: ReminderEditScope,
+    occurrenceDate?: string,
+  ): Promise<void> {
+    const reminder = await this.findOwnedOrFail(userId, reminderId);
+
+    if (reminder.is_override || reminder.recurrence_type === ReminderRecurrence.NONE) {
+      if (reminder.is_override && reminder.series_id && reminder.original_occurrence_date) {
+        await this.ensureException(
+          reminder.series_id,
+          userId,
+          reminder.original_occurrence_date,
+        );
+      }
+      await this.remindersRepository.remove(reminder);
+      return;
+    }
+
+    const resolvedScope = scope ?? ReminderEditScope.ALL;
+
+    if (resolvedScope === ReminderEditScope.ALL) {
+      await this.remindersRepository.delete({
+        series_id: reminder.id,
+        user_id: userId,
+      });
+      await this.remindersRepository.remove(reminder);
+      return;
+    }
+
+    if (!occurrenceDate || !/^\d{4}-\d{2}-\d{2}$/.test(occurrenceDate)) {
+      throw new BadRequestException(
+        'occurrenceDate es obligatorio para este alcance.',
+      );
+    }
+
+    if (resolvedScope === ReminderEditScope.THIS) {
+      await this.ensureException(reminder.id, userId, occurrenceDate);
+      const override = await this.remindersRepository.findOne({
+        where: {
+          series_id: reminder.id,
+          original_occurrence_date: occurrenceDate,
+          user_id: userId,
+        },
+      });
+      if (override) {
+        await this.remindersRepository.remove(override);
+      }
+      return;
+    }
+
+    // this_and_following
+    reminder.series_until = dayBeforeKey(occurrenceDate);
+    await this.remindersRepository.save(reminder);
+
+    const futureOverrides = await this.remindersRepository.find({
+      where: { series_id: reminder.id, user_id: userId, is_override: true },
+    });
+    const toRemove = futureOverrides.filter(
+      (item) =>
+        item.original_occurrence_date &&
+        item.original_occurrence_date >= occurrenceDate,
+    );
+    if (toRemove.length > 0) {
+      await this.remindersRepository.remove(toRemove);
+    }
+  }
+
+  private async applyDirectUpdate(
+    reminder: Reminder,
+    dto: UpdateReminderDto,
+    timeZone: string,
+  ): Promise<ReminderView> {
     if (dto.title !== undefined) {
       reminder.title = dto.title.trim();
     }
@@ -235,8 +555,217 @@ export class RemindersService {
     reminder.notify_value = schedule.notifyValue;
     reminder.notify_unit = schedule.notifyUnit;
 
+    if (
+      schedule.recurrenceType !== ReminderRecurrence.NONE &&
+      !reminder.series_start
+    ) {
+      reminder.series_start = getSeriesStartKey(reminder);
+    }
+
     const saved = await this.remindersRepository.save(reminder);
-    return this.toView(saved);
+    return this.toView(saved, timeZone);
+  }
+
+  private async updateThisOccurrence(
+    master: Reminder,
+    userId: string,
+    occurrenceDate: string,
+    dto: UpdateReminderDto,
+    timeZone: string,
+  ): Promise<ReminderView> {
+    await this.ensureException(master.id, userId, occurrenceDate);
+
+    const existing = await this.remindersRepository.findOne({
+      where: {
+        series_id: master.id,
+        original_occurrence_date: occurrenceDate,
+        user_id: userId,
+      },
+    });
+    if (existing) {
+      await this.remindersRepository.remove(existing);
+    }
+
+    const schedule = this.normalizeSchedule({
+      repeats: false,
+      scheduledDate: dto.scheduledDate ?? occurrenceDate,
+      timeMode: dto.timeMode ?? master.time_mode,
+      startTime: dto.startTime ?? master.start_time ?? undefined,
+      endTime: dto.endTime ?? master.end_time ?? undefined,
+      notifyEnabled: dto.notifyEnabled ?? master.notify_enabled,
+      notifyValue: dto.notifyValue ?? master.notify_value ?? undefined,
+      notifyUnit: dto.notifyUnit ?? master.notify_unit ?? undefined,
+    });
+
+    const override = this.remindersRepository.create({
+      user_id: userId,
+      title: (dto.title ?? master.title).trim(),
+      description:
+        dto.description !== undefined
+          ? dto.description?.trim() || null
+          : master.description,
+      recurrence_type: ReminderRecurrence.NONE,
+      scheduled_date: schedule.scheduledDate,
+      weekdays: null,
+      day_of_month: null,
+      month_of_year: null,
+      time_mode: schedule.timeMode,
+      start_time: schedule.startTime,
+      end_time: schedule.endTime,
+      notify_enabled: schedule.notifyEnabled,
+      notify_value: schedule.notifyValue,
+      notify_unit: schedule.notifyUnit,
+      last_completed_at: null,
+      series_id: master.id,
+      series_start: null,
+      series_until: null,
+      original_occurrence_date: occurrenceDate,
+      is_override: true,
+    });
+
+    const saved = await this.remindersRepository.save(override);
+
+    const completion = await this.completionsRepository.findOne({
+      where: {
+        reminder_id: master.id,
+        user_id: userId,
+        occurrence_date: occurrenceDate,
+      },
+    });
+    if (completion) {
+      completion.reminder_id = saved.id;
+      await this.completionsRepository.save(completion);
+    }
+
+    return this.toView(saved, timeZone);
+  }
+
+  private async updateThisAndFollowing(
+    master: Reminder,
+    userId: string,
+    occurrenceDate: string,
+    dto: UpdateReminderDto,
+    timeZone: string,
+  ): Promise<ReminderView> {
+    master.series_until = dayBeforeKey(occurrenceDate);
+    await this.remindersRepository.save(master);
+
+    const repeats = dto.repeats ?? true;
+    const schedule = this.normalizeSchedule({
+      repeats,
+      recurrenceType:
+        dto.recurrenceType ??
+        (repeats ? master.recurrence_type : ReminderRecurrence.NONE),
+      scheduledDate: dto.scheduledDate ?? occurrenceDate,
+      weekdays: dto.weekdays ?? master.weekdays ?? undefined,
+      dayOfMonth: dto.dayOfMonth ?? master.day_of_month ?? undefined,
+      monthOfYear: dto.monthOfYear ?? master.month_of_year ?? undefined,
+      timeMode: dto.timeMode ?? master.time_mode,
+      startTime: dto.startTime ?? master.start_time ?? undefined,
+      endTime: dto.endTime ?? master.end_time ?? undefined,
+      notifyEnabled: dto.notifyEnabled ?? master.notify_enabled,
+      notifyValue: dto.notifyValue ?? master.notify_value ?? undefined,
+      notifyUnit: dto.notifyUnit ?? master.notify_unit ?? undefined,
+    });
+
+    const newSeries = this.remindersRepository.create({
+      user_id: userId,
+      title: (dto.title ?? master.title).trim(),
+      description:
+        dto.description !== undefined
+          ? dto.description?.trim() || null
+          : master.description,
+      recurrence_type: schedule.recurrenceType,
+      scheduled_date: schedule.scheduledDate,
+      weekdays: schedule.weekdays,
+      day_of_month: schedule.dayOfMonth,
+      month_of_year: schedule.monthOfYear,
+      time_mode: schedule.timeMode,
+      start_time: schedule.startTime,
+      end_time: schedule.endTime,
+      notify_enabled: schedule.notifyEnabled,
+      notify_value: schedule.notifyValue,
+      notify_unit: schedule.notifyUnit,
+      last_completed_at: null,
+      series_id: null,
+      series_start:
+        schedule.recurrenceType === ReminderRecurrence.NONE
+          ? null
+          : occurrenceDate,
+      series_until: null,
+      original_occurrence_date: null,
+      is_override: false,
+    });
+
+    const saved = await this.remindersRepository.save(newSeries);
+
+    const futureOverrides = await this.remindersRepository.find({
+      where: { series_id: master.id, user_id: userId, is_override: true },
+    });
+
+    for (const override of futureOverrides) {
+      if (
+        !override.original_occurrence_date ||
+        override.original_occurrence_date < occurrenceDate
+      ) {
+        continue;
+      }
+
+      if (
+        schedule.recurrenceType !== ReminderRecurrence.NONE &&
+        matchesRecurrencePattern(
+          saved,
+          parseDateKey(override.original_occurrence_date),
+        )
+      ) {
+        override.series_id = saved.id;
+        await this.remindersRepository.save(override);
+        await this.ensureException(
+          saved.id,
+          userId,
+          override.original_occurrence_date,
+        );
+      } else {
+        await this.remindersRepository.remove(override);
+      }
+    }
+
+    const futureExceptions = await this.exceptionsRepository.find({
+      where: { reminder_id: master.id, user_id: userId },
+    });
+    for (const exception of futureExceptions) {
+      if (exception.occurrence_date < occurrenceDate) {
+        continue;
+      }
+      await this.ensureException(saved.id, userId, exception.occurrence_date);
+      await this.exceptionsRepository.remove(exception);
+    }
+
+    return this.toView(saved, timeZone);
+  }
+
+  private async ensureException(
+    reminderId: string,
+    userId: string,
+    occurrenceDate: string,
+  ): Promise<void> {
+    const existing = await this.exceptionsRepository.findOne({
+      where: {
+        reminder_id: reminderId,
+        occurrence_date: occurrenceDate,
+        user_id: userId,
+      },
+    });
+    if (existing) {
+      return;
+    }
+    await this.exceptionsRepository.save(
+      this.exceptionsRepository.create({
+        reminder_id: reminderId,
+        user_id: userId,
+        occurrence_date: occurrenceDate,
+      }),
+    );
   }
 
   async setCompletion(
@@ -247,6 +776,20 @@ export class RemindersService {
   ): Promise<ReminderView> {
     const safeTimeZone = this.resolveTimeZone(timeZone);
     const reminder = await this.findOwnedOrFail(userId, reminderId);
+    const occurrenceDate = dto.occurrenceDate?.trim() || null;
+
+    if (occurrenceDate) {
+      await this.setCompletionForOccurrence(
+        reminder,
+        userId,
+        occurrenceDate,
+        dto.completed,
+        safeTimeZone,
+      );
+      const saved = await this.remindersRepository.save(reminder);
+      return this.toView(saved, safeTimeZone);
+    }
+
     const currentlyCompleted = this.isCompletedForCurrentPeriod(
       reminder,
       safeTimeZone,
@@ -256,14 +799,14 @@ export class RemindersService {
 
     if (nextCompleted && !currentlyCompleted) {
       const completedAt = new Date();
-      const occurrenceDate = this.resolveOccurrenceDate(reminder, completedAt);
+      const resolvedDate = this.resolveOccurrenceDate(reminder, completedAt);
 
       await this.completionsRepository.save(
         this.completionsRepository.create({
           reminder_id: reminder.id,
           user_id: userId,
           completed_at: completedAt,
-          occurrence_date: occurrenceDate,
+          occurrence_date: resolvedDate,
         }),
       );
 
@@ -283,9 +826,115 @@ export class RemindersService {
     return this.toView(saved, safeTimeZone);
   }
 
-  async remove(userId: string, reminderId: string): Promise<void> {
-    const reminder = await this.findOwnedOrFail(userId, reminderId);
-    await this.remindersRepository.remove(reminder);
+  private toCompletionView(
+    completion: ReminderCompletion,
+  ): ReminderCompletionView {
+    return {
+      id: completion.id,
+      reminderId: completion.reminder_id,
+      completedAt: completion.completed_at.toISOString(),
+      occurrenceDate: completion.occurrence_date,
+    };
+  }
+
+  private async setCompletionForOccurrence(
+    reminder: Reminder,
+    userId: string,
+    occurrenceDate: string,
+    completed: boolean | undefined,
+    timeZone: string,
+  ): Promise<void> {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(occurrenceDate)) {
+      throw new BadRequestException('Fecha de ocurrencia inválida.');
+    }
+
+    const existing = await this.completionsRepository.findOne({
+      where: {
+        reminder_id: reminder.id,
+        user_id: userId,
+        occurrence_date: occurrenceDate,
+      },
+    });
+
+    const nextCompleted =
+      typeof completed === 'boolean' ? completed : !existing;
+
+    if (nextCompleted && !existing) {
+      const completedAt = new Date();
+      await this.completionsRepository.save(
+        this.completionsRepository.create({
+          reminder_id: reminder.id,
+          user_id: userId,
+          completed_at: completedAt,
+          occurrence_date: occurrenceDate,
+        }),
+      );
+
+      if (
+        this.isOccurrenceDateInCurrentPeriod(reminder, occurrenceDate, timeZone)
+      ) {
+        reminder.last_completed_at = completedAt;
+      }
+      return;
+    }
+
+    if (!nextCompleted && existing) {
+      await this.completionsRepository.remove(existing);
+
+      if (
+        this.isOccurrenceDateInCurrentPeriod(reminder, occurrenceDate, timeZone)
+      ) {
+        const latestCurrent = await this.findLatestCurrentPeriodCompletion(
+          reminder,
+          userId,
+          timeZone,
+        );
+        reminder.last_completed_at = latestCurrent?.completed_at ?? null;
+      }
+    }
+  }
+
+  private async findLatestCurrentPeriodCompletion(
+    reminder: Reminder,
+    userId: string,
+    timeZone: string,
+  ): Promise<ReminderCompletion | null> {
+    const completions = await this.completionsRepository.find({
+      where: { reminder_id: reminder.id, user_id: userId },
+      order: { completed_at: 'DESC' },
+    });
+
+    return (
+      completions.find((completion) =>
+        this.completionBelongsToCurrentPeriod(
+          reminder,
+          completion.completed_at,
+          timeZone,
+        ),
+      ) ?? null
+    );
+  }
+
+  private isOccurrenceDateInCurrentPeriod(
+    reminder: Reminder,
+    occurrenceDate: string,
+    timeZone: string,
+  ): boolean {
+    const nowParts = this.getZonedDateParts(new Date(), timeZone);
+    const [year, month] = occurrenceDate.split('-').map(Number);
+
+    switch (reminder.recurrence_type) {
+      case ReminderRecurrence.NONE:
+        return true;
+      case ReminderRecurrence.WEEKLY:
+        return occurrenceDate === nowParts.date;
+      case ReminderRecurrence.MONTHLY:
+        return year === nowParts.year && month === nowParts.month;
+      case ReminderRecurrence.YEARLY:
+        return year === nowParts.year;
+      default:
+        return false;
+    }
   }
 
   private async findOwnedOrFail(
@@ -543,7 +1192,10 @@ export class RemindersService {
     from = new Date(),
     timeZone = 'UTC',
   ): Date | null {
-    const cursor = new Date(from);
+    const seriesStartKey = getSeriesStartKey(reminder);
+    const seriesStart = parseDateKey(seriesStartKey);
+    const fromDay = this.startOfDay(from);
+    const cursor = fromDay < seriesStart ? seriesStart : fromDay;
     const safeTimeZone = this.resolveTimeZone(timeZone);
 
     if (reminder.recurrence_type === ReminderRecurrence.NONE) {
@@ -565,14 +1217,15 @@ export class RemindersService {
 
     for (let i = 0; i < 400; i += 1) {
       const candidateDate = this.addDays(this.startOfDay(cursor), i);
-      if (!this.matchesRecurrenceDate(reminder, candidateDate)) {
+      const dateKey = this.formatDate(candidateDate);
+      if (reminder.series_until && dateKey > reminder.series_until) {
+        break;
+      }
+      if (!matchesRecurrencePattern(reminder, candidateDate)) {
         continue;
       }
 
-      const occurrence = this.combineDateAndTime(
-        this.formatDate(candidateDate),
-        reminder,
-      );
+      const occurrence = this.combineDateAndTime(dateKey, reminder);
 
       if (occurrence.getTime() >= from.getTime() - 60 * 1000) {
         if (
@@ -605,19 +1258,7 @@ export class RemindersService {
   }
 
   private matchesRecurrenceDate(reminder: Reminder, date: Date): boolean {
-    switch (reminder.recurrence_type) {
-      case ReminderRecurrence.WEEKLY:
-        return (reminder.weekdays ?? []).includes(date.getDay());
-      case ReminderRecurrence.MONTHLY:
-        return date.getDate() === reminder.day_of_month;
-      case ReminderRecurrence.YEARLY:
-        return (
-          date.getDate() === reminder.day_of_month &&
-          date.getMonth() + 1 === reminder.month_of_year
-        );
-      default:
-        return false;
-    }
+    return matchesRecurrencePattern(reminder, date);
   }
 
   private combineDateAndTime(dateStr: string, reminder: Reminder): Date {
@@ -798,6 +1439,13 @@ export class RemindersService {
     reminder: ReminderView,
     today: { date: string; year: number; month: number; day: number; weekday: number },
   ): boolean {
+    if (reminder.seriesUntil && today.date > reminder.seriesUntil) {
+      return false;
+    }
+    if (reminder.seriesStart && today.date < reminder.seriesStart) {
+      return false;
+    }
+
     switch (reminder.recurrenceType) {
       case ReminderRecurrence.NONE:
         return reminder.scheduledDate === today.date;
@@ -857,6 +1505,11 @@ export class RemindersService {
       lastCompletedAt: reminder.last_completed_at
         ? reminder.last_completed_at.toISOString()
         : null,
+      seriesId: reminder.series_id,
+      seriesStart: reminder.series_start ?? getSeriesStartKey(reminder),
+      seriesUntil: reminder.series_until,
+      originalOccurrenceDate: reminder.original_occurrence_date,
+      isOverride: reminder.is_override ?? false,
       createdAt: reminder.created_at.toISOString(),
       updatedAt: reminder.updated_at.toISOString(),
     };

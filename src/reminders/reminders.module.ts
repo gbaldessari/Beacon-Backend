@@ -1,12 +1,15 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ReminderCompletion } from './entities/reminder-completion.entity';
+import { ReminderException } from './entities/reminder-exception.entity';
 import { Reminder } from './entities/reminder.entity';
 import { RemindersController } from './reminders.controller';
 import { RemindersService } from './reminders.service';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Reminder, ReminderCompletion])],
+  imports: [
+    TypeOrmModule.forFeature([Reminder, ReminderCompletion, ReminderException]),
+  ],
   controllers: [RemindersController],
   providers: [RemindersService],
   exports: [RemindersService],

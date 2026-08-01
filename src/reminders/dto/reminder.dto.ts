@@ -16,6 +16,7 @@ import {
   ValidateIf,
 } from 'class-validator';
 import {
+  ReminderEditScope,
   ReminderNotifyUnit,
   ReminderRecurrence,
   ReminderTimeMode,
@@ -191,13 +192,32 @@ export class UpdateReminderDto {
   @IsOptional()
   @IsEnum(ReminderNotifyUnit)
   notifyUnit?: ReminderNotifyUnit | null;
+
+  /**
+   * Alcance al editar una serie. Obligatorio si es recurrente (salvo override).
+   */
+  @IsOptional()
+  @IsEnum(ReminderEditScope)
+  scope?: ReminderEditScope;
+
+  /**
+   * Fecha de la ocurrencia sobre la que se aplica el alcance (YYYY-MM-DD).
+   */
+  @IsOptional()
+  @Matches(DATE_RE)
+  occurrenceDate?: string;
 }
 
 /**
  * DTO para marcar o desmarcar completado.
+ * Si se envía occurrenceDate, aplica solo a esa ocurrencia del calendario.
  */
 export class SetReminderCompletionDto {
   @IsOptional()
   @IsBoolean()
   completed?: boolean;
+
+  @IsOptional()
+  @Matches(DATE_RE, { message: 'occurrenceDate debe ser YYYY-MM-DD' })
+  occurrenceDate?: string;
 }

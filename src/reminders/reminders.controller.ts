@@ -17,6 +17,7 @@ import {
   SetReminderCompletionDto,
   UpdateReminderDto,
 } from './dto/reminder.dto';
+import { ReminderEditScope } from './reminder-recurrence.enum';
 import { RemindersService } from './reminders.service';
 
 /**
@@ -37,6 +38,34 @@ export class RemindersController {
     return this.remindersService.listUpcoming(req.user.userId, timezone);
   }
 
+  @Get('completions')
+  async listCompletionsRange(
+    @Request() req,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.remindersService.listCompletionsForUser(
+      req.user.userId,
+      from,
+      to,
+    );
+  }
+
+  @Get('occurrences')
+  async listOccurrences(
+    @Request() req,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('timezone') timezone?: string,
+  ) {
+    return this.remindersService.listOccurrences(
+      req.user.userId,
+      from,
+      to,
+      timezone,
+    );
+  }
+
   @Get(':id/completions')
   async listCompletions(
     @Request() req,
@@ -55,8 +84,14 @@ export class RemindersController {
     @Request() req,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateReminderDto,
+    @Query('timezone') timezone?: string,
   ) {
-    return this.remindersService.update(req.user.userId, id, dto);
+    return this.remindersService.update(
+      req.user.userId,
+      id,
+      dto,
+      timezone,
+    );
   }
 
   @Patch(':id/completion')
@@ -75,8 +110,18 @@ export class RemindersController {
   }
 
   @Delete(':id')
-  async remove(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
-    await this.remindersService.remove(req.user.userId, id);
+  async remove(
+    @Request() req,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('scope') scope?: ReminderEditScope,
+    @Query('occurrenceDate') occurrenceDate?: string,
+  ) {
+    await this.remindersService.remove(
+      req.user.userId,
+      id,
+      scope,
+      occurrenceDate,
+    );
     return { success: true };
   }
 }

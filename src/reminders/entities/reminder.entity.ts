@@ -13,7 +13,7 @@ import {
 } from '../reminder-recurrence.enum';
 
 /**
- * Recordatorio o tarea del usuario (única o recurrente).
+ * Recordatorio o tarea del usuario (única, serie o override de una fecha).
  */
 @Entity({ name: 'reminders' })
 export class Reminder {
@@ -76,6 +76,34 @@ export class Reminder {
 
   @Column({ type: 'timestamp with time zone', nullable: true })
   last_completed_at!: Date | null;
+
+  /**
+   * Serie maestra de un override. Null = es maestro o único independiente.
+   */
+  @Index()
+  @Column({ type: 'uuid', nullable: true })
+  series_id!: string | null;
+
+  /**
+   * Primera fecha incluida de la serie (YYYY-MM-DD). Null = usar created_at.
+   */
+  @Column({ type: 'date', nullable: true })
+  series_start!: string | null;
+
+  /**
+   * Última fecha incluida de la serie (YYYY-MM-DD). Null = sin fin.
+   */
+  @Column({ type: 'date', nullable: true })
+  series_until!: string | null;
+
+  /**
+   * Fecha original de la ocurrencia desviada (solo overrides).
+   */
+  @Column({ type: 'date', nullable: true })
+  original_occurrence_date!: string | null;
+
+  @Column({ type: 'boolean', default: false })
+  is_override!: boolean;
 
   @CreateDateColumn({ type: 'timestamp with time zone' })
   created_at!: Date;
