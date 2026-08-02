@@ -29,13 +29,29 @@ export class RemindersController {
   constructor(private readonly remindersService: RemindersService) {}
 
   @Get()
-  async list(@Request() req, @Query('timezone') timezone?: string) {
-    return this.remindersService.listForUser(req.user.userId, timezone);
+  async list(
+    @Request() req,
+    @Query('timezone') timezone?: string,
+    @Query('calendarIds') calendarIds?: string,
+  ) {
+    return this.remindersService.listForUser(
+      req.user.userId,
+      timezone,
+      calendarIds,
+    );
   }
 
   @Get('upcoming')
-  async upcoming(@Request() req, @Query('timezone') timezone?: string) {
-    return this.remindersService.listUpcoming(req.user.userId, timezone);
+  async upcoming(
+    @Request() req,
+    @Query('timezone') timezone?: string,
+    @Query('calendarIds') calendarIds?: string,
+  ) {
+    return this.remindersService.listUpcoming(
+      req.user.userId,
+      timezone,
+      calendarIds,
+    );
   }
 
   @Get('completions')
@@ -43,11 +59,13 @@ export class RemindersController {
     @Request() req,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('calendarIds') calendarIds?: string,
   ) {
     return this.remindersService.listCompletionsForUser(
       req.user.userId,
       from,
       to,
+      calendarIds,
     );
   }
 
@@ -57,12 +75,14 @@ export class RemindersController {
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('timezone') timezone?: string,
+    @Query('calendarIds') calendarIds?: string,
   ) {
     return this.remindersService.listOccurrences(
       req.user.userId,
       from,
       to,
       timezone,
+      calendarIds,
     );
   }
 

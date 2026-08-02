@@ -14,6 +14,7 @@ import { Repository } from 'typeorm';
 import { z } from 'zod';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { DeleteUserDto } from './dto/delete-user.dto';
+import { GetProfileDto } from './dto/get-profile.dto';
 import { GetUsersDto } from './dto/get-users.dto';
 import { LoginDto, LoginResponseDto } from './dto/login.dto';
 import {
@@ -159,8 +160,10 @@ export class AuthService {
     passwordSchema.parse(userData.password);
 
     const foundUser = await this.findUserByEmail(userData.email);
+    // Avoid account enumeration: same outcome whether the email exists or not.
     if (foundUser) {
-      throw new ConflictException('User already exists');
+      await bcrypt.hash(userData.password, 10);
+      return;
     }
 
     const newUserId = crypto.randomUUID();
@@ -197,10 +200,11 @@ export class AuthService {
     ) {
       throw new UnauthorizedException('Invalid credentials');
     }
+    // Same generic message for inactive accounts to avoid confirming valid
+    // credentials to an attacker. Log the real reason server-side only.
     if (!foundUser.is_active) {
-      throw new UnauthorizedException(
-        'Tu cuenta esta pendiente de activacion. Un administrador debe habilitar tu acceso.',
-      );
+      this.logger.warn(`Login blocked for inactive user ${foundUser.id}`);
+      throw new UnauthorizedException('Invalid credentials');
     }
 
     const permissionType =
@@ -529,6 +533,31 @@ export class AuthService {
     return {
       code: roleDefinition.code,
       name: roleDefinition.name,
+      permissionType: roleDefinition.permission_type,
+    };
+  }
+
+  /**
+   * Retrieves the authenticated user's personal profile.
+   *
+   * @param userId The ID of the authenticated user
+   * @returns Profile data for the current user
+   */
+  async getProfile(userId: string): Promise<GetProfileDto> {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const roleDefinition =
+      await this.roleDefinitionService.ensureAssignableRole(user.role);
+
+    return {
+      firstName: user.first_name,
+      lastName: user.last_name,
+      email: user.email,
+      role: roleDefinition.code,
+      roleName: roleDefinition.name,
       permissionType: roleDefinition.permission_type,
     };
   }

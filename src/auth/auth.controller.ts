@@ -34,6 +34,7 @@ import {
 } from './dto/refresh-token.dto';
 import { DeleteUserDto } from './dto/delete-user.dto';
 import { ValidateAccessTokenResponseDto } from './dto/validate-access-token.dto';
+import { GetProfileDto } from './dto/get-profile.dto';
 import { GetUsersDto } from './dto/get-users.dto';
 import { Roles } from './guard/roles.decorator';
 import { RolesGuard } from './guard/roles.guard';
@@ -196,6 +197,18 @@ export class AuthController {
   }
 
   /**
+   * Retrieves the personal profile of the authenticated user.
+   *
+   * @param req HTTP request object containing user information
+   * @returns Profile data for the authenticated user
+   */
+  @UseGuards(JwtAuthGuard)
+  @Get('me')
+  async getProfile(@Request() req): Promise<GetProfileDto> {
+    return await this.authService.getProfile(req.user.userId);
+  }
+
+  /**
    * Updates the name of the authenticated user.
    *
    * @param req HTTP request object containing user information
@@ -346,7 +359,14 @@ export class AuthController {
   }
 
   private shouldUseSecureRefreshCookie(): boolean {
-    return process.env.REFRESH_COOKIE_SECURE === 'true';
+    if (process.env.REFRESH_COOKIE_SECURE === 'true') {
+      return true;
+    }
+    if (process.env.REFRESH_COOKIE_SECURE === 'false') {
+      return false;
+    }
+    // Default to Secure in production so refresh cookies are not sent over HTTP.
+    return process.env.NODE_ENV === 'production';
   }
 
   private parseCookies(cookieHeader: unknown): Record<string, string> {

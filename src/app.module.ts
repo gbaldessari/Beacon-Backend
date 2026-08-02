@@ -6,7 +6,11 @@ import { join } from 'path';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthModule } from './auth/auth.module';
 import { EmailModule } from './email/email.module';
+import { FinanceModule } from './finance/finance.module';
+import { NotificationsModule } from './notifications/notifications.module';
 import { RemindersModule } from './reminders/reminders.module';
+import { NotesModule } from './notes/notes.module';
+import { RealtimeModule } from './realtime/realtime.module';
 
 /**
  * Módulo raíz de la aplicación backend.
@@ -37,7 +41,11 @@ import { RemindersModule } from './reminders/reminders.module';
     ScheduleModule.forRoot(),
     AuthModule,
     EmailModule,
+    NotificationsModule,
     RemindersModule,
+    FinanceModule,
+    NotesModule,
+    RealtimeModule,
   ],
   controllers: [],
   providers: [],

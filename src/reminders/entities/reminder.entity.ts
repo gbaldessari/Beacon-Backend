@@ -24,6 +24,10 @@ export class Reminder {
   @Column({ type: 'uuid' })
   user_id!: string;
 
+  @Index()
+  @Column({ type: 'uuid' })
+  calendar_id!: string;
+
   @Column({ type: 'varchar', length: 160 })
   title!: string;
 

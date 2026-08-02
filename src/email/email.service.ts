@@ -154,6 +154,85 @@ export class EmailService implements OnModuleInit {
     });
   }
 
+  async sendReminderNotificationEmail(
+    to: string,
+    params: { title: string; whenLabel: string; link?: string },
+  ): Promise<void> {
+    const subject = `Aviso: ${params.title.trim()}`;
+    const safeTitle = this.escapeHtml(params.title.trim());
+    const safeWhen = this.escapeHtml(params.whenLabel.trim());
+    const link = params.link?.trim();
+
+    const contentHtml = [
+      '<p style="margin:0 0 12px;color:#1E293B;font-size:15px;line-height:1.55;">',
+      'Tienes un recordatorio próximo en Beacon.',
+      '</p>',
+      '<div style="margin:18px 0;padding:14px 16px;border:1px solid #E2E8F0;border-radius:12px;background:#F8FAFC;">',
+      `<p style="margin:0 0 6px;color:#183A72;font-size:17px;font-weight:700;">${safeTitle}</p>`,
+      `<p style="margin:0;color:#64748B;font-size:14px;line-height:1.55;">${safeWhen}</p>`,
+      '</div>',
+      link
+        ? [
+            '<p style="margin:0 0 16px;">',
+            `<a href="${this.escapeHtml(link)}" style="display:inline-block;padding:12px 18px;border-radius:10px;background:#183A72;color:#FFFFFF;text-decoration:none;font-size:14px;font-weight:600;">Ver en Beacon</a>`,
+            '</p>',
+          ].join('')
+        : '',
+      '<p style="margin:0;color:#64748B;font-size:14px;line-height:1.55;">Si ya lo resolviste, puedes ignorar este correo.</p>',
+    ].join('');
+
+    await this.sendTemplatedEmail({
+      to,
+      subject,
+      preheader: `Recordatorio: ${params.title.trim()}`,
+      contentHtml,
+      variant: 'generic',
+      withSuccessLog: false,
+    });
+  }
+
+  async sendInviteEmail(
+    to: string,
+    params: {
+      resourceKind: 'calendar' | 'finance';
+      resourceName: string;
+      inviterName: string;
+      roleLabel: string;
+      acceptUrl: string;
+    },
+  ): Promise<void> {
+    const kindLabel =
+      params.resourceKind === 'calendar' ? 'calendario' : 'espacio de finanzas';
+    const subject = `Invitación a ${kindLabel} en Beacon`;
+    const safeName = this.escapeHtml(params.resourceName.trim());
+    const safeInviter = this.escapeHtml(params.inviterName.trim());
+    const safeRole = this.escapeHtml(params.roleLabel.trim());
+    const safeUrl = this.escapeHtml(params.acceptUrl.trim());
+
+    const contentHtml = [
+      `<p style="margin:0 0 12px;color:#1E293B;font-size:15px;line-height:1.55;">Hola,</p>`,
+      `<p style="margin:0 0 12px;color:#1E293B;font-size:15px;line-height:1.55;">`,
+      `<strong>${safeInviter}</strong> te invitó a compartir el ${kindLabel} <strong>${safeName}</strong> en Beacon.`,
+      '</p>',
+      `<p style="margin:0 0 12px;color:#1E293B;font-size:15px;line-height:1.55;">Rol propuesto: <strong>${safeRole}</strong></p>`,
+      '<p style="margin:0 0 16px;">',
+      `<a href="${safeUrl}" style="display:inline-block;padding:12px 18px;border-radius:10px;background:#183A72;color:#FFFFFF;text-decoration:none;font-size:14px;font-weight:600;">Aceptar invitación</a>`,
+      '</p>',
+      '<p style="margin:0;color:#64748B;font-size:14px;line-height:1.55;">',
+      'Debes iniciar sesión con este mismo correo. El enlace vence en 7 días.',
+      '</p>',
+    ].join('');
+
+    await this.sendTemplatedEmail({
+      to,
+      subject,
+      preheader: `Te invitaron a ${params.resourceName.trim()}`,
+      contentHtml,
+      variant: 'generic',
+      withSuccessLog: true,
+    });
+  }
+
   private async sendTemplatedEmail({
     to,
     subject,

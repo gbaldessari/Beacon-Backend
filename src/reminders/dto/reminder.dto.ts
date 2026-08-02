@@ -8,6 +8,7 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  IsUUID,
   Matches,
   Max,
   MaxLength,
@@ -113,6 +114,9 @@ export class CreateReminderDto {
   @ValidateIf((dto: CreateReminderDto) => dto.notifyEnabled === true)
   @IsEnum(ReminderNotifyUnit)
   notifyUnit?: ReminderNotifyUnit;
+
+  @IsUUID()
+  calendarId!: string;
 }
 
 /**

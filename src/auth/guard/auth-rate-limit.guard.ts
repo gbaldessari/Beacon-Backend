@@ -46,7 +46,7 @@ export class AuthRateLimitGuard implements CanActivate {
 
     const request = context.switchToHttp().getRequest<{
       ip?: string;
-      headers?: Record<string, string | string[] | undefined>;
+      socket?: { remoteAddress?: string };
       body?: { email?: unknown };
       route?: { path?: string };
     }>();
@@ -75,17 +75,18 @@ export class AuthRateLimitGuard implements CanActivate {
   private buildKey(
     request: {
       ip?: string;
-      headers?: Record<string, string | string[] | undefined>;
+      socket?: { remoteAddress?: string };
       body?: { email?: unknown };
-      route?: { path?: string };
     },
     handlerName: string,
   ): string {
-    const forwardedFor = request.headers?.['x-forwarded-for'];
-    const forwardedIp = Array.isArray(forwardedFor)
-      ? forwardedFor[0]
-      : forwardedFor?.split(',')[0];
-    const ip = forwardedIp?.trim() || request.ip || 'unknown-ip';
+    // Prefer Express/Nest `request.ip` (respects `trust proxy` when configured).
+    // Never read client-controlled `X-Forwarded-For` directly — that allows
+    // rotating fake IPs and bypassing the limit.
+    const ip =
+      request.ip?.trim() ||
+      request.socket?.remoteAddress?.trim() ||
+      'unknown-ip';
     const email =
       typeof request.body?.email === 'string'
         ? request.body.email.trim().toLowerCase()

@@ -15,6 +15,12 @@ async function bootstrap() {
    */
   const app = await NestFactory.create(AppModule);
 
+  // Behind a reverse proxy (nginx, ALB, etc.), enable so `request.ip` reflects
+  // the real client. Only set TRUST_PROXY=true when the proxy is trusted.
+  if (process.env.TRUST_PROXY === 'true') {
+    app.getHttpAdapter().getInstance().set('trust proxy', 1);
+  }
+
   /**
    * Amplía el límite del parser para aceptar imágenes base64 enviadas por el chat.
    */

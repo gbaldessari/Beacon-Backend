@@ -1,11 +1,15 @@
 import {
   BadRequestException,
-  ForbiddenException,
+  Inject,
   Injectable,
   NotFoundException,
+  forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
+import { RealtimeEventsService } from 'src/realtime/realtime-events.service';
+import { CalendarMemberRole } from './calendar.enums';
+import { CalendarsService } from './calendars.service';
 import {
   CreateReminderDto,
   SetReminderCompletionDto,
@@ -55,6 +59,10 @@ export type ReminderView = {
   seriesUntil: string | null;
   originalOccurrenceDate: string | null;
   isOverride: boolean;
+  calendarId: string;
+  calendarName: string;
+  calendarColor: string;
+  canEdit: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -111,19 +119,68 @@ export class RemindersService {
     private readonly completionsRepository: Repository<ReminderCompletion>,
     @InjectRepository(ReminderException)
     private readonly exceptionsRepository: Repository<ReminderException>,
+    private readonly calendarsService: CalendarsService,
+    @Inject(forwardRef(() => RealtimeEventsService))
+    private readonly realtimeEvents: RealtimeEventsService,
   ) {}
+
+  private notifyCalendar(
+    calendarId: string,
+    reason: string,
+    actorId?: string,
+  ): void {
+    this.realtimeEvents.emitCalendarSync({ calendarId, reason, actorId });
+    void this.calendarsService
+      .getCalendarMemberUserIds(calendarId)
+      .then((memberIds) => {
+        const targets = actorId
+          ? memberIds.filter((id) => id !== actorId)
+          : memberIds;
+        this.realtimeEvents.emitUserRemindersMany(targets, { reason });
+      })
+      .catch(() => undefined);
+  }
+
+  private async resolveCalendarIds(
+    userId: string,
+    calendarIdsParam?: string,
+  ): Promise<string[]> {
+    const owned = await this.calendarsService.getMemberCalendarIds(userId);
+    if (!calendarIdsParam?.trim()) {
+      return owned;
+    }
+
+    const requested = calendarIdsParam
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean);
+    const ownedSet = new Set(owned);
+    const filtered = requested.filter((id) => ownedSet.has(id));
+    return filtered.length ? filtered : owned;
+  }
 
   async listForUser(
     userId: string,
     timeZone = 'UTC',
+    calendarIdsParam?: string,
   ): Promise<ReminderView[]> {
+    const calendarIds = await this.resolveCalendarIds(userId, calendarIdsParam);
+    if (!calendarIds.length) {
+      return [];
+    }
+
     const reminders = await this.remindersRepository.find({
-      where: { user_id: userId, is_override: false },
+      where: { calendar_id: In(calendarIds), is_override: false },
       order: { created_at: 'DESC' },
     });
 
+    const calendars = await this.calendarsService.getCalendarsByIds(calendarIds);
+    const roles = await this.getRoleMap(userId, calendarIds);
+
     return Promise.all(
-      reminders.map((reminder) => this.toView(reminder, timeZone)),
+      reminders.map((reminder) =>
+        this.toView(reminder, timeZone, calendars, roles),
+      ),
     );
   }
 
@@ -132,6 +189,7 @@ export class RemindersService {
     from?: string,
     to?: string,
     timeZone = 'UTC',
+    calendarIdsParam?: string,
   ): Promise<ReminderOccurrenceView[]> {
     if (
       !from ||
@@ -146,8 +204,13 @@ export class RemindersService {
     }
 
     const safeTimeZone = this.resolveTimeZone(timeZone);
+    const calendarIds = await this.resolveCalendarIds(userId, calendarIdsParam);
+    if (!calendarIds.length) {
+      return [];
+    }
+
     const reminders = await this.remindersRepository.find({
-      where: { user_id: userId },
+      where: { calendar_id: In(calendarIds) },
     });
     const masters = reminders.filter((item) => !item.is_override);
     const overrides = reminders.filter((item) => item.is_override);
@@ -157,7 +220,7 @@ export class RemindersService {
       masterIds.length === 0
         ? []
         : await this.exceptionsRepository.find({
-            where: { reminder_id: In(masterIds), user_id: userId },
+            where: { reminder_id: In(masterIds) },
           });
 
     const exceptionSet = new Set(
@@ -173,19 +236,29 @@ export class RemindersService {
       }
     }
 
-    const completions = await this.completionsRepository.find({
-      where: { user_id: userId },
-    });
+    const reminderIds = reminders.map((r) => r.id);
+    const completions =
+      reminderIds.length === 0
+        ? []
+        : await this.completionsRepository.find({
+            where: { reminder_id: In(reminderIds) },
+          });
     const completedSet = new Set(
       completions
         .filter((item) => item.occurrence_date)
         .map((item) => `${item.reminder_id}:${item.occurrence_date}`),
     );
 
+    const calendars = await this.calendarsService.getCalendarsByIds(calendarIds);
+    const roles = await this.getRoleMap(userId, calendarIds);
+
     const viewsById = new Map<string, ReminderView>();
     await Promise.all(
       reminders.map(async (reminder) => {
-        viewsById.set(reminder.id, await this.toView(reminder, safeTimeZone));
+        viewsById.set(
+          reminder.id,
+          await this.toView(reminder, safeTimeZone, calendars, roles),
+        );
       }),
     );
 
@@ -276,14 +349,83 @@ export class RemindersService {
     );
   }
 
+  /**
+   * Objetivos listos para entrega de aviso (cron). Un ítem por miembro del calendario.
+   */
+  async listDueNotificationTargets(now = new Date()): Promise<
+    Array<{
+      userId: string;
+      reminderId: string;
+      title: string;
+      description: string | null;
+      occurrenceAt: Date;
+      notifyAt: Date;
+      occurrenceKey: string;
+    }>
+  > {
+    const reminders = await this.remindersRepository.find({
+      where: { notify_enabled: true, is_override: false },
+    });
+
+    const results: Array<{
+      userId: string;
+      reminderId: string;
+      title: string;
+      description: string | null;
+      occurrenceAt: Date;
+      notifyAt: Date;
+      occurrenceKey: string;
+    }> = [];
+
+    for (const reminder of reminders) {
+      if (this.isCompletedForCurrentPeriod(reminder, 'UTC')) {
+        continue;
+      }
+
+      const occurrence = this.getNextOccurrence(reminder, now, 'UTC');
+      const notifyAt = this.getNotifyAt(reminder, occurrence);
+      if (!occurrence || !notifyAt) {
+        continue;
+      }
+
+      if (
+        notifyAt.getTime() > now.getTime() ||
+        occurrence.getTime() < now.getTime()
+      ) {
+        continue;
+      }
+
+      const memberIds = await this.calendarsService.getCalendarMemberUserIds(
+        reminder.calendar_id,
+      );
+      const recipients = memberIds.length ? memberIds : [reminder.user_id];
+      const occurrenceKey = occurrence.toISOString();
+
+      for (const userId of recipients) {
+        results.push({
+          userId,
+          reminderId: reminder.id,
+          title: reminder.title,
+          description: reminder.description,
+          occurrenceAt: occurrence,
+          notifyAt,
+          occurrenceKey,
+        });
+      }
+    }
+
+    return results;
+  }
+
   async listUpcoming(
     userId: string,
     timeZone = 'UTC',
+    calendarIdsParam?: string,
   ): Promise<UpcomingReminderView[]> {
     const safeTimeZone = this.resolveTimeZone(timeZone);
     const now = new Date();
     const todayParts = this.getZonedDateParts(now, safeTimeZone);
-    const views = await this.listForUser(userId, safeTimeZone);
+    const views = await this.listForUser(userId, safeTimeZone, calendarIdsParam);
 
     return views
       .map((reminder) => {
@@ -329,10 +471,10 @@ export class RemindersService {
     userId: string,
     reminderId: string,
   ): Promise<ReminderCompletionView[]> {
-    await this.findOwnedOrFail(userId, reminderId);
+    await this.findAccessibleOrFail(userId, reminderId, CalendarMemberRole.VIEWER);
 
     const completions = await this.completionsRepository.find({
-      where: { reminder_id: reminderId, user_id: userId },
+      where: { reminder_id: reminderId },
       order: { completed_at: 'DESC' },
     });
 
@@ -343,10 +485,25 @@ export class RemindersService {
     userId: string,
     from?: string,
     to?: string,
+    calendarIdsParam?: string,
   ): Promise<ReminderCompletionView[]> {
+    const calendarIds = await this.resolveCalendarIds(userId, calendarIdsParam);
+    if (!calendarIds.length) {
+      return [];
+    }
+
+    const reminders = await this.remindersRepository.find({
+      where: { calendar_id: In(calendarIds) },
+      select: ['id'],
+    });
+    const reminderIds = reminders.map((r) => r.id);
+    if (!reminderIds.length) {
+      return [];
+    }
+
     const qb = this.completionsRepository
       .createQueryBuilder('c')
-      .where('c.user_id = :userId', { userId })
+      .where('c.reminder_id IN (:...reminderIds)', { reminderIds })
       .orderBy('c.completed_at', 'DESC');
 
     if (from && /^\d{4}-\d{2}-\d{2}$/.test(from)) {
@@ -361,10 +518,16 @@ export class RemindersService {
   }
 
   async create(userId: string, dto: CreateReminderDto): Promise<ReminderView> {
+    await this.calendarsService.assertMembership(
+      userId,
+      dto.calendarId,
+      CalendarMemberRole.EDITOR,
+    );
     const schedule = this.normalizeSchedule(dto);
 
     const reminder = this.remindersRepository.create({
       user_id: userId,
+      calendar_id: dto.calendarId,
       title: dto.title.trim(),
       description: dto.description?.trim() || null,
       recurrence_type: schedule.recurrenceType,
@@ -390,7 +553,13 @@ export class RemindersService {
     });
 
     const saved = await this.remindersRepository.save(reminder);
-    return this.toView(saved);
+    const calendars = await this.calendarsService.getCalendarsByIds([
+      saved.calendar_id,
+    ]);
+    const roles = await this.getRoleMap(userId, [saved.calendar_id]);
+    const view = await this.toView(saved, 'UTC', calendars, roles);
+    this.notifyCalendar(view.calendarId, 'reminder:created', userId);
+    return view;
   }
 
   async update(
@@ -399,45 +568,52 @@ export class RemindersService {
     dto: UpdateReminderDto,
     timeZone = 'UTC',
   ): Promise<ReminderView> {
-    const reminder = await this.findOwnedOrFail(userId, reminderId);
+    const reminder = await this.findAccessibleOrFail(
+      userId,
+      reminderId,
+      CalendarMemberRole.EDITOR,
+    );
     const safeTimeZone = this.resolveTimeZone(timeZone);
 
+    let view: ReminderView;
+
     if (reminder.is_override || reminder.recurrence_type === ReminderRecurrence.NONE) {
-      return this.applyDirectUpdate(reminder, dto, safeTimeZone);
-    }
+      view = await this.applyDirectUpdate(reminder, userId, dto, safeTimeZone);
+    } else {
+      const scope = dto.scope ?? ReminderEditScope.ALL;
+      const occurrenceDate = dto.occurrenceDate?.trim();
 
-    const scope = dto.scope ?? ReminderEditScope.ALL;
-    const occurrenceDate = dto.occurrenceDate?.trim();
+      if (scope !== ReminderEditScope.ALL) {
+        if (!occurrenceDate || !/^\d{4}-\d{2}-\d{2}$/.test(occurrenceDate)) {
+          throw new BadRequestException(
+            'occurrenceDate es obligatorio para este alcance.',
+          );
+        }
+      }
 
-    if (scope !== ReminderEditScope.ALL) {
-      if (!occurrenceDate || !/^\d{4}-\d{2}-\d{2}$/.test(occurrenceDate)) {
-        throw new BadRequestException(
-          'occurrenceDate es obligatorio para este alcance.',
+      if (scope === ReminderEditScope.THIS) {
+        view = await this.updateThisOccurrence(
+          reminder,
+          userId,
+          occurrenceDate as string,
+          dto,
+          safeTimeZone,
         );
+      } else if (scope === ReminderEditScope.THIS_AND_FOLLOWING) {
+        view = await this.updateThisAndFollowing(
+          reminder,
+          userId,
+          occurrenceDate as string,
+          dto,
+          safeTimeZone,
+        );
+      } else {
+        view = await this.applyDirectUpdate(reminder, userId, dto, safeTimeZone);
       }
     }
 
-    if (scope === ReminderEditScope.THIS) {
-      return this.updateThisOccurrence(
-        reminder,
-        userId,
-        occurrenceDate as string,
-        dto,
-        safeTimeZone,
-      );
-    }
-
-    if (scope === ReminderEditScope.THIS_AND_FOLLOWING) {
-      return this.updateThisAndFollowing(
-        reminder,
-        userId,
-        occurrenceDate as string,
-        dto,
-        safeTimeZone,
-      );
-    }
-
-    return this.applyDirectUpdate(reminder, dto, safeTimeZone);
+    this.notifyCalendar(view.calendarId, 'reminder:updated', userId);
+    return view;
   }
 
   async remove(
@@ -446,7 +622,12 @@ export class RemindersService {
     scope?: ReminderEditScope,
     occurrenceDate?: string,
   ): Promise<void> {
-    const reminder = await this.findOwnedOrFail(userId, reminderId);
+    const reminder = await this.findAccessibleOrFail(
+      userId,
+      reminderId,
+      CalendarMemberRole.EDITOR,
+    );
+    const calendarId = reminder.calendar_id;
 
     if (reminder.is_override || reminder.recurrence_type === ReminderRecurrence.NONE) {
       if (reminder.is_override && reminder.series_id && reminder.original_occurrence_date) {
@@ -457,6 +638,7 @@ export class RemindersService {
         );
       }
       await this.remindersRepository.remove(reminder);
+      this.notifyCalendar(calendarId, 'reminder:deleted', userId);
       return;
     }
 
@@ -465,9 +647,10 @@ export class RemindersService {
     if (resolvedScope === ReminderEditScope.ALL) {
       await this.remindersRepository.delete({
         series_id: reminder.id,
-        user_id: userId,
+        calendar_id: reminder.calendar_id,
       });
       await this.remindersRepository.remove(reminder);
+      this.notifyCalendar(calendarId, 'reminder:deleted', userId);
       return;
     }
 
@@ -483,12 +666,13 @@ export class RemindersService {
         where: {
           series_id: reminder.id,
           original_occurrence_date: occurrenceDate,
-          user_id: userId,
+          calendar_id: reminder.calendar_id,
         },
       });
       if (override) {
         await this.remindersRepository.remove(override);
       }
+      this.notifyCalendar(calendarId, 'reminder:deleted', userId);
       return;
     }
 
@@ -497,7 +681,11 @@ export class RemindersService {
     await this.remindersRepository.save(reminder);
 
     const futureOverrides = await this.remindersRepository.find({
-      where: { series_id: reminder.id, user_id: userId, is_override: true },
+      where: {
+        series_id: reminder.id,
+        calendar_id: reminder.calendar_id,
+        is_override: true,
+      },
     });
     const toRemove = futureOverrides.filter(
       (item) =>
@@ -507,10 +695,12 @@ export class RemindersService {
     if (toRemove.length > 0) {
       await this.remindersRepository.remove(toRemove);
     }
+    this.notifyCalendar(calendarId, 'reminder:deleted', userId);
   }
 
   private async applyDirectUpdate(
     reminder: Reminder,
+    userId: string,
     dto: UpdateReminderDto,
     timeZone: string,
   ): Promise<ReminderView> {
@@ -563,7 +753,7 @@ export class RemindersService {
     }
 
     const saved = await this.remindersRepository.save(reminder);
-    return this.toView(saved, timeZone);
+    return this.viewForUser(userId, saved, timeZone);
   }
 
   private async updateThisOccurrence(
@@ -579,7 +769,7 @@ export class RemindersService {
       where: {
         series_id: master.id,
         original_occurrence_date: occurrenceDate,
-        user_id: userId,
+        calendar_id: master.calendar_id,
       },
     });
     if (existing) {
@@ -599,6 +789,7 @@ export class RemindersService {
 
     const override = this.remindersRepository.create({
       user_id: userId,
+      calendar_id: master.calendar_id,
       title: (dto.title ?? master.title).trim(),
       description:
         dto.description !== undefined
@@ -628,7 +819,6 @@ export class RemindersService {
     const completion = await this.completionsRepository.findOne({
       where: {
         reminder_id: master.id,
-        user_id: userId,
         occurrence_date: occurrenceDate,
       },
     });
@@ -637,7 +827,7 @@ export class RemindersService {
       await this.completionsRepository.save(completion);
     }
 
-    return this.toView(saved, timeZone);
+    return this.viewForUser(userId, saved, timeZone);
   }
 
   private async updateThisAndFollowing(
@@ -670,6 +860,7 @@ export class RemindersService {
 
     const newSeries = this.remindersRepository.create({
       user_id: userId,
+      calendar_id: master.calendar_id,
       title: (dto.title ?? master.title).trim(),
       description:
         dto.description !== undefined
@@ -700,7 +891,11 @@ export class RemindersService {
     const saved = await this.remindersRepository.save(newSeries);
 
     const futureOverrides = await this.remindersRepository.find({
-      where: { series_id: master.id, user_id: userId, is_override: true },
+      where: {
+        series_id: master.id,
+        calendar_id: master.calendar_id,
+        is_override: true,
+      },
     });
 
     for (const override of futureOverrides) {
@@ -731,7 +926,7 @@ export class RemindersService {
     }
 
     const futureExceptions = await this.exceptionsRepository.find({
-      where: { reminder_id: master.id, user_id: userId },
+      where: { reminder_id: master.id },
     });
     for (const exception of futureExceptions) {
       if (exception.occurrence_date < occurrenceDate) {
@@ -741,7 +936,7 @@ export class RemindersService {
       await this.exceptionsRepository.remove(exception);
     }
 
-    return this.toView(saved, timeZone);
+    return this.viewForUser(userId, saved, timeZone);
   }
 
   private async ensureException(
@@ -775,7 +970,11 @@ export class RemindersService {
     timeZone = 'UTC',
   ): Promise<ReminderView> {
     const safeTimeZone = this.resolveTimeZone(timeZone);
-    const reminder = await this.findOwnedOrFail(userId, reminderId);
+    const reminder = await this.findAccessibleOrFail(
+      userId,
+      reminderId,
+      CalendarMemberRole.EDITOR,
+    );
     const occurrenceDate = dto.occurrenceDate?.trim() || null;
 
     if (occurrenceDate) {
@@ -787,7 +986,9 @@ export class RemindersService {
         safeTimeZone,
       );
       const saved = await this.remindersRepository.save(reminder);
-      return this.toView(saved, safeTimeZone);
+      const view = await this.viewForUser(userId, saved, safeTimeZone);
+      this.notifyCalendar(view.calendarId, 'reminder:completion', userId);
+      return view;
     }
 
     const currentlyCompleted = this.isCompletedForCurrentPeriod(
@@ -816,14 +1017,16 @@ export class RemindersService {
     if (!nextCompleted && currentlyCompleted) {
       await this.removeCurrentPeriodCompletion(reminder, userId, safeTimeZone);
       const latest = await this.completionsRepository.findOne({
-        where: { reminder_id: reminder.id, user_id: userId },
+        where: { reminder_id: reminder.id },
         order: { completed_at: 'DESC' },
       });
       reminder.last_completed_at = latest?.completed_at ?? null;
     }
 
     const saved = await this.remindersRepository.save(reminder);
-    return this.toView(saved, safeTimeZone);
+    const view = await this.viewForUser(userId, saved, safeTimeZone);
+    this.notifyCalendar(view.calendarId, 'reminder:completion', userId);
+    return view;
   }
 
   private toCompletionView(
@@ -851,7 +1054,6 @@ export class RemindersService {
     const existing = await this.completionsRepository.findOne({
       where: {
         reminder_id: reminder.id,
-        user_id: userId,
         occurrence_date: occurrenceDate,
       },
     });
@@ -900,7 +1102,7 @@ export class RemindersService {
     timeZone: string,
   ): Promise<ReminderCompletion | null> {
     const completions = await this.completionsRepository.find({
-      where: { reminder_id: reminder.id, user_id: userId },
+      where: { reminder_id: reminder.id },
       order: { completed_at: 'DESC' },
     });
 
@@ -937,9 +1139,10 @@ export class RemindersService {
     }
   }
 
-  private async findOwnedOrFail(
+  private async findAccessibleOrFail(
     userId: string,
     reminderId: string,
+    minRole: CalendarMemberRole = CalendarMemberRole.VIEWER,
   ): Promise<Reminder> {
     const reminder = await this.remindersRepository.findOne({
       where: { id: reminderId },
@@ -949,11 +1152,33 @@ export class RemindersService {
       throw new NotFoundException('Recordatorio no encontrado.');
     }
 
-    if (reminder.user_id !== userId) {
-      throw new ForbiddenException('No tienes acceso a este recordatorio.');
-    }
+    await this.calendarsService.assertMembership(
+      userId,
+      reminder.calendar_id,
+      minRole,
+    );
 
     return reminder;
+  }
+
+  private async getRoleMap(
+    userId: string,
+    calendarIds: string[],
+  ): Promise<Map<string, CalendarMemberRole>> {
+    const map = new Map<string, CalendarMemberRole>();
+    for (const calendarId of calendarIds) {
+      try {
+        const membership = await this.calendarsService.assertMembership(
+          userId,
+          calendarId,
+          CalendarMemberRole.VIEWER,
+        );
+        map.set(calendarId, membership.role);
+      } catch {
+        // skip calendars without access
+      }
+    }
+    return map;
   }
 
   private normalizeSchedule(input: {
@@ -1334,11 +1559,11 @@ export class RemindersService {
 
   private async removeCurrentPeriodCompletion(
     reminder: Reminder,
-    userId: string,
+    _userId: string,
     timeZone = 'UTC',
   ): Promise<void> {
     const completions = await this.completionsRepository.find({
-      where: { reminder_id: reminder.id, user_id: userId },
+      where: { reminder_id: reminder.id },
       order: { completed_at: 'DESC' },
     });
 
@@ -1463,9 +1688,23 @@ export class RemindersService {
     }
   }
 
+  private async viewForUser(
+    userId: string,
+    reminder: Reminder,
+    timeZone = 'UTC',
+  ): Promise<ReminderView> {
+    const calendars = await this.calendarsService.getCalendarsByIds([
+      reminder.calendar_id,
+    ]);
+    const roles = await this.getRoleMap(userId, [reminder.calendar_id]);
+    return this.toView(reminder, timeZone, calendars, roles);
+  }
+
   private async toView(
     reminder: Reminder,
     timeZone = 'UTC',
+    calendars?: Map<string, { id: string; name: string; color: string }>,
+    roles?: Map<string, CalendarMemberRole>,
   ): Promise<ReminderView> {
     if ((reminder.recurrence_type as string) === 'daily') {
       reminder.recurrence_type = ReminderRecurrence.WEEKLY;
@@ -1481,6 +1720,26 @@ export class RemindersService {
     const completionCount = await this.completionsRepository.count({
       where: { reminder_id: reminder.id },
     });
+
+    let calendarName = '';
+    let calendarColor = '#0f766e';
+    let canEdit = false;
+
+    const calendarMap =
+      calendars ??
+      (await this.calendarsService.getCalendarsByIds([reminder.calendar_id]));
+
+    const calendar = calendarMap.get(reminder.calendar_id);
+    if (calendar) {
+      calendarName = calendar.name;
+      calendarColor = calendar.color;
+    }
+
+    if (roles?.has(reminder.calendar_id)) {
+      const role = roles.get(reminder.calendar_id)!;
+      canEdit =
+        role === CalendarMemberRole.OWNER || role === CalendarMemberRole.EDITOR;
+    }
 
     return {
       id: reminder.id,
@@ -1510,6 +1769,10 @@ export class RemindersService {
       seriesUntil: reminder.series_until,
       originalOccurrenceDate: reminder.original_occurrence_date,
       isOverride: reminder.is_override ?? false,
+      calendarId: reminder.calendar_id,
+      calendarName,
+      calendarColor,
+      canEdit,
       createdAt: reminder.created_at.toISOString(),
       updatedAt: reminder.updated_at.toISOString(),
     };
